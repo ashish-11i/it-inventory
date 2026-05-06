@@ -134,27 +134,26 @@ def get_col_meta(conn):
 # ── DB init ───────────────────────────────────────────────────────────────
 def init_db():
     conn = get_db()
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS systems (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            created_at TEXT DEFAULT (datetime('now','localtime')),
-            updated_at TEXT DEFAULT (datetime('now','localtime'))
-        );
-        CREATE TABLE IF NOT EXISTS col_meta (
-            field_name    TEXT PRIMARY KEY,
-            excel_header  TEXT,
-            display_order INTEGER DEFAULT 0
-        );
-        CREATE TABLE IF NOT EXISTS history (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            system_id   INTEGER,
-            field_name  TEXT,
-            old_value   TEXT,
-            new_value   TEXT,
-            changed_at  TEXT DEFAULT (datetime('now','localtime')),
-            FOREIGN KEY (system_id) REFERENCES systems(id)
-        );
-    """)
+    # Use individual execute() calls — works for both SQLite and _TursoConn
+    conn.execute("""CREATE TABLE IF NOT EXISTS systems (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        created_at TEXT DEFAULT (datetime('now','localtime')),
+        updated_at TEXT DEFAULT (datetime('now','localtime'))
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS col_meta (
+        field_name    TEXT PRIMARY KEY,
+        excel_header  TEXT,
+        display_order INTEGER DEFAULT 0
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS history (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        system_id   INTEGER,
+        field_name  TEXT,
+        old_value   TEXT,
+        new_value   TEXT,
+        changed_at  TEXT DEFAULT (datetime('now','localtime')),
+        FOREIGN KEY (system_id) REFERENCES systems(id)
+    )""")
     conn.commit()
 
     # Migrate old fixed-schema DBs: populate col_meta from existing columns
