@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+venv/
+.venv/
+
+# Database (never commit the live DB file)
+backend/inventory.db
+*.db
+
+# Node
+frontend/node_modules/
+frontend/dist/
+frontend/.env.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Excel / data files (keep sensitive inventory data off GitHub)
+*.xlsx
+*.xls
+*.csv
