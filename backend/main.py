@@ -2,7 +2,7 @@
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-import sqlite3, io, re, openpyxl, os
+import sqlite3, io, re, openpyxl, os, requests as _http
 from datetime import datetime, date as date_type
 from datetime import datetime
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -12,7 +12,7 @@ app = FastAPI(title="IT Inventory API")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 # ── Database setup ─────────────────────────────────────────────────────────
-# If TURSO_URL + TURSO_TOKEN are set → use Turso (free cloud SQLite)
+# If TURSO_URL + TURSO_TOKEN are set → use Turso via HTTP (no Rust needed)
 # Otherwise → use local SQLite file (local development)
 TURSO_URL   = os.environ.get("TURSO_URL", "")
 TURSO_TOKEN = os.environ.get("TURSO_TOKEN", "")
@@ -22,11 +22,75 @@ DATA_DIR = os.environ.get("DATA_DIR", os.path.dirname(os.path.abspath(__file__))
 os.makedirs(DATA_DIR, exist_ok=True)
 DB_PATH = os.path.join(DATA_DIR, "inventory.db")
 
-# ── Helpers ───────────────────────────────────────────────────────────────
+# ── Pure-Python Turso HTTP client (no Rust / no libsql-experimental) ──────
+def _tv(p):
+    """Encode a Python value into a Turso typed-value dict."""
+    if p is None:                        return {"type":"null","value":None}
+    if isinstance(p, bool):              return {"type":"integer","value":str(int(p))}
+    if isinstance(p, int):               return {"type":"integer","value":str(p)}
+    if isinstance(p, float):             return {"type":"float","value":str(p)}
+    return {"type":"text","value":str(p)}
+
+def _dv(v):
+    """Decode a Turso typed-value dict back to a Python value."""
+    if v is None: return None
+    t, raw = v.get("type",""), v.get("value")
+    if t == "null" or raw is None: return None
+    if t == "integer": return int(raw)
+    if t == "float":   return float(raw)
+    return raw
+
+class _TursoRow:
+    """sqlite3.Row-compatible object: access by name or index."""
+    __slots__ = ("_c","_v","_m")
+    def __init__(self, cols, vals):
+        object.__setattr__(self,"_c",cols)
+        object.__setattr__(self,"_v",vals)
+        object.__setattr__(self,"_m",dict(zip(cols,vals)))
+    def __getitem__(self,k): return self._v[k] if isinstance(k,int) else self._m[k]
+    def keys(self): return list(self._c)
+    def __iter__(self): return iter(self._v)
+    def __len__(self): return len(self._v)
+
+class _TursoCursor:
+    def __init__(self, cols, raw_rows, as_row):
+        mk = (lambda r: _TursoRow(cols,[_dv(v) for v in r])) if as_row \
+             else (lambda r: tuple(_dv(v) for v in r))
+        self._rows = [mk(r) for r in raw_rows]
+        self._i = 0
+    def fetchall(self):  return self._rows
+    def fetchone(self):
+        r = self._rows[self._i] if self._i < len(self._rows) else None
+        self._i += 1; return r
+    def __iter__(self): return iter(self._rows)
+
+class _TursoConn:
+    """HTTP connection to Turso that looks like sqlite3.Connection."""
+    def __init__(self, url, token):
+        base = url.replace("libsql://","https://")
+        self._ep   = base.rstrip("/") + "/v2/pipeline"
+        self._hdrs = {"Authorization":f"Bearer {token}","Content-Type":"application/json"}
+        self.row_factory = None
+    def execute(self, sql, parameters=None):
+        stmt = {"sql": sql}
+        if parameters: stmt["args"] = [_tv(p) for p in parameters]
+        r = _http.post(self._ep, headers=self._hdrs,
+                       json={"requests":[{"type":"execute","stmt":stmt},{"type":"close"}]},
+                       timeout=30)
+        r.raise_for_status()
+        res = r.json()["results"][0]
+        if res.get("type") == "error":
+            raise Exception(res.get("error",{}).get("message","Turso error"))
+        result = res["response"]["result"]
+        cols = [c["name"] for c in result.get("cols",[])]
+        return _TursoCursor(cols, result.get("rows",[]), self.row_factory == sqlite3.Row)
+    def commit(self): pass   # Turso auto-commits each statement
+    def close(self):  pass
+
+# ── get_db ─────────────────────────────────────────────────────────────────
 def get_db():
     if USE_TURSO:
-        import libsql_experimental as libsql
-        conn = libsql.connect(TURSO_URL, auth_token=TURSO_TOKEN)
+        conn = _TursoConn(TURSO_URL, TURSO_TOKEN)
         conn.row_factory = sqlite3.Row
         return conn
     conn = sqlite3.connect(DB_PATH)
